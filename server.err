@@ -1,1 +1,156 @@
 ◇ injected env (5) from .env
+◇ injected env (5) from .env
+◇ injected env (5) from .env
+Unhandled error: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+    at parse (E:\FixMyCampus_backend\node_modules\body-parser\lib\types\json.js:91:21)
+    at E:\FixMyCampus_backend\node_modules\body-parser\lib\read.js:162:18
+    at AsyncResource.runInAsyncScope (node:async_hooks:227:14)
+    at invokeCallback (E:\FixMyCampus_backend\node_modules\raw-body\index.js:238:16)
+    at done (E:\FixMyCampus_backend\node_modules\raw-body\index.js:227:7)
+    at IncomingMessage.onEnd (E:\FixMyCampus_backend\node_modules\raw-body\index.js:287:7)
+    at IncomingMessage.emit (node:events:509:28)
+    at endReadableNT (node:internal/streams/readable:1729:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  expose: true,
+  statusCode: 400,
+  status: 400,
+  body: '{email:admin@campus.edu,password:admin123,role:admin}',
+  type: 'entity.parse.failed'
+}
+Unhandled error: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+    at parse (E:\FixMyCampus_backend\node_modules\body-parser\lib\types\json.js:91:21)
+    at E:\FixMyCampus_backend\node_modules\body-parser\lib\read.js:162:18
+    at AsyncResource.runInAsyncScope (node:async_hooks:227:14)
+    at invokeCallback (E:\FixMyCampus_backend\node_modules\raw-body\index.js:238:16)
+    at done (E:\FixMyCampus_backend\node_modules\raw-body\index.js:227:7)
+    at IncomingMessage.onEnd (E:\FixMyCampus_backend\node_modules\raw-body\index.js:287:7)
+    at IncomingMessage.emit (node:events:509:28)
+    at endReadableNT (node:internal/streams/readable:1729:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  expose: true,
+  statusCode: 400,
+  status: 400,
+  body: '{title:Valid sweep title,description:A valid description for the sweep test.,category:Other,location:Sweep Zone 7778}',
+  type: 'entity.parse.failed'
+}
+Unhandled error: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+    at parse (E:\FixMyCampus_backend\node_modules\body-parser\lib\types\json.js:91:21)
+    at E:\FixMyCampus_backend\node_modules\body-parser\lib\read.js:162:18
+    at AsyncResource.runInAsyncScope (node:async_hooks:227:14)
+    at invokeCallback (E:\FixMyCampus_backend\node_modules\raw-body\index.js:238:16)
+    at done (E:\FixMyCampus_backend\node_modules\raw-body\index.js:227:7)
+    at IncomingMessage.onEnd (E:\FixMyCampus_backend\node_modules\raw-body\index.js:287:7)
+    at IncomingMessage.emit (node:events:509:28)
+    at endReadableNT (node:internal/streams/readable:1729:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  expose: true,
+  statusCode: 400,
+  status: 400,
+  body: '{title:Sweep write cycle v2,description:Temporary report to sweep every write endpoint.,category:Other,location:Sweep Zone 7779}',
+  type: 'entity.parse.failed'
+}
+Unhandled error: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+    at parse (E:\FixMyCampus_backend\node_modules\body-parser\lib\types\json.js:91:21)
+    at E:\FixMyCampus_backend\node_modules\body-parser\lib\read.js:162:18
+    at AsyncResource.runInAsyncScope (node:async_hooks:227:14)
+    at invokeCallback (E:\FixMyCampus_backend\node_modules\raw-body\index.js:238:16)
+    at done (E:\FixMyCampus_backend\node_modules\raw-body\index.js:227:7)
+    at IncomingMessage.onEnd (E:\FixMyCampus_backend\node_modules\raw-body\index.js:287:7)
+    at IncomingMessage.emit (node:events:509:28)
+    at endReadableNT (node:internal/streams/readable:1729:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  expose: true,
+  statusCode: 400,
+  status: 400,
+  body: '{location:Sweep Zone 7780}',
+  type: 'entity.parse.failed'
+}
+Unhandled error: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+    at parse (E:\FixMyCampus_backend\node_modules\body-parser\lib\types\json.js:91:21)
+    at E:\FixMyCampus_backend\node_modules\body-parser\lib\read.js:162:18
+    at AsyncResource.runInAsyncScope (node:async_hooks:227:14)
+    at invokeCallback (E:\FixMyCampus_backend\node_modules\raw-body\index.js:238:16)
+    at done (E:\FixMyCampus_backend\node_modules\raw-body\index.js:227:7)
+    at IncomingMessage.onEnd (E:\FixMyCampus_backend\node_modules\raw-body\index.js:287:7)
+    at IncomingMessage.emit (node:events:509:28)
+    at endReadableNT (node:internal/streams/readable:1729:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  expose: true,
+  statusCode: 400,
+  status: 400,
+  body: '{text:sweep comment}',
+  type: 'entity.parse.failed'
+}
+Unhandled error: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+    at parse (E:\FixMyCampus_backend\node_modules\body-parser\lib\types\json.js:91:21)
+    at E:\FixMyCampus_backend\node_modules\body-parser\lib\read.js:162:18
+    at AsyncResource.runInAsyncScope (node:async_hooks:227:14)
+    at invokeCallback (E:\FixMyCampus_backend\node_modules\raw-body\index.js:238:16)
+    at done (E:\FixMyCampus_backend\node_modules\raw-body\index.js:227:7)
+    at IncomingMessage.onEnd (E:\FixMyCampus_backend\node_modules\raw-body\index.js:287:7)
+    at IncomingMessage.emit (node:events:509:28)
+    at endReadableNT (node:internal/streams/readable:1729:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  expose: true,
+  statusCode: 400,
+  status: 400,
+  body: '{status:in_progress}',
+  type: 'entity.parse.failed'
+}
+Unhandled error: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+    at parse (E:\FixMyCampus_backend\node_modules\body-parser\lib\types\json.js:91:21)
+    at E:\FixMyCampus_backend\node_modules\body-parser\lib\read.js:162:18
+    at AsyncResource.runInAsyncScope (node:async_hooks:227:14)
+    at invokeCallback (E:\FixMyCampus_backend\node_modules\raw-body\index.js:238:16)
+    at done (E:\FixMyCampus_backend\node_modules\raw-body\index.js:227:7)
+    at IncomingMessage.onEnd (E:\FixMyCampus_backend\node_modules\raw-body\index.js:287:7)
+    at IncomingMessage.emit (node:events:509:28)
+    at endReadableNT (node:internal/streams/readable:1729:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  expose: true,
+  statusCode: 400,
+  status: 400,
+  body: '{status:open}',
+  type: 'entity.parse.failed'
+}
+Unhandled error: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+    at parse (E:\FixMyCampus_backend\node_modules\body-parser\lib\types\json.js:91:21)
+    at E:\FixMyCampus_backend\node_modules\body-parser\lib\read.js:162:18
+    at AsyncResource.runInAsyncScope (node:async_hooks:227:14)
+    at invokeCallback (E:\FixMyCampus_backend\node_modules\raw-body\index.js:238:16)
+    at done (E:\FixMyCampus_backend\node_modules\raw-body\index.js:227:7)
+    at IncomingMessage.onEnd (E:\FixMyCampus_backend\node_modules\raw-body\index.js:287:7)
+    at IncomingMessage.emit (node:events:509:28)
+    at endReadableNT (node:internal/streams/readable:1729:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  expose: true,
+  statusCode: 400,
+  status: 400,
+  body: '{decision:approve,note:sweep}',
+  type: 'entity.parse.failed'
+}
+Unhandled error: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+    at parse (E:\FixMyCampus_backend\node_modules\body-parser\lib\types\json.js:91:21)
+    at E:\FixMyCampus_backend\node_modules\body-parser\lib\read.js:162:18
+    at AsyncResource.runInAsyncScope (node:async_hooks:227:14)
+    at invokeCallback (E:\FixMyCampus_backend\node_modules\raw-body\index.js:238:16)
+    at done (E:\FixMyCampus_backend\node_modules\raw-body\index.js:227:7)
+    at IncomingMessage.onEnd (E:\FixMyCampus_backend\node_modules\raw-body\index.js:287:7)
+    at IncomingMessage.emit (node:events:509:28)
+    at endReadableNT (node:internal/streams/readable:1729:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  expose: true,
+  statusCode: 400,
+  status: 400,
+  body: '{decision:approve,note:sweep again}',
+  type: 'entity.parse.failed'
+}
