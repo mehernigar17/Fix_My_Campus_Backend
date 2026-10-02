@@ -105,7 +105,12 @@ const populatePath = (doc, path) => {
 };
 
 const matchesCondition = (doc, key, condition) => {
-  const value = readPath(doc, key);
+  const read = readPath(doc, key);
+  // A populated reference reads back as a user object rather than an id. The
+  // real driver matches the filter against the raw document *before*
+  // populating; this harness mutates the stored document in place, so the id is
+  // pulled back out here or a `reportedBy` filter can never match.
+  const value = read && typeof read === 'object' && read._id ? read._id : read;
 
   if (condition && typeof condition === 'object' && !(condition instanceof RegExp)) {
     if ('$in' in condition) {
@@ -239,16 +244,33 @@ User.findById = (id) => userQuery(users.get(String(id)) || null);
 
 // ── App ─────────────────────────────────────────────────────────────────────
 const issueRoutes = require('../src/routes/issueRoutes');
+const userRoutes = require('../src/routes/userRoutes');
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/issues', issueRoutes);
+// Mounted exactly as server.js does, so the "My reports" list is covered too.
+app.use(userRoutes);
 
 const server = app.listen(0);
 const base = `http://127.0.0.1:${server.address().port}`;
 
 const call = async (method, url, { token, body } = {}) => {
   const res = await fetch(`${base}/issues${url}`, {
+    method,
+    headers: {
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const text = await res.text();
+  return { status: res.status, body: text ? JSON.parse(text) : null };
+};
+
+// Routes mounted at the app root rather than under /issues (e.g. /my/issues).
+const callRoot = async (method, url, { token, body } = {}) => {
+  const res = await fetch(`${base}${url}`, {
     method,
     headers: {
       ...(body ? { 'Content-Type': 'application/json' } : {}),
@@ -368,6 +390,128 @@ const run = async () => {
     const res = await call('GET', '', { token: other });
     eq(res.body.total, 1, 'published only');
     eq(res.body.issues[0].moderation.state, 'approved', 'state');
+  });
+
+  // ── The full reporting gate: file → admin approves → it reaches students ──
+  console.log('\nReport — student files, admin approves, students see it');
+
+  // A report filed through the real POST /issues endpoint, which is where the
+  // review gate used to be bypassed.
+  const fileReport = async (overrides = {}) => {
+    const res = await call('POST', '', {
+      token: student,
+      body: {
+        title: 'Corridor light flickering near the lift',
+        description: 'The tube light flickers constantly since Monday morning.',
+        category: 'Electrical',
+        location: 'Hostel Block B',
+        ...overrides,
+      },
+    });
+    return res;
+  };
+
+  await test('a newly filed report is pending, never published on arrival', async () => {
+    documents.length = 0;
+    const res = await fileReport();
+    eq(res.status, 201, 'status');
+    eq(res.body.issue.moderation.state, 'pending', 'must wait for an admin decision');
+    eq(res.body.issue.status, 'open', 'work status');
+  });
+
+  await test('the reporter\'s fresh report appears in the admin review queue', async () => {
+    documents.length = 0;
+    const filed = await fileReport();
+    const queue = await call('GET', '?moderation=pending', { token: admin });
+    eq(queue.status, 200, 'status');
+    eq(queue.body.total, 1, 'one report awaiting review');
+    eq(queue.body.issues[0]._id, filed.body.issue._id, 'the same report is queued');
+    eq(queue.body.issues[0].moderation.state, 'pending', 'state');
+    eq(queue.body.issues[0].reportedBy.name, 'Riya Sen', 'reporter is named for the admin');
+  });
+
+  await test('the report stays off every student board until it is approved', async () => {
+    documents.length = 0;
+    const filed = await fileReport();
+
+    const bystander = await call('GET', '', { token: other });
+    eq(bystander.body.total, 0, 'no other student sees it');
+
+    // The reporter still finds it under "My reports", so nothing looks lost.
+    const mine = await callRoot('GET', '/my/issues', { token: student });
+    eq(mine.status, 200, 'status');
+    eq(mine.body.total, 1, 'reporter sees their own report');
+    eq(mine.body.issues[0]._id, filed.body.issue._id, 'same report');
+  });
+
+  await test('a bystander gets a 404 for a pending report, but the reporter and admin do not', async () => {
+    documents.length = 0;
+    const filed = await fileReport();
+    eq((await call('GET', `/${filed.body.issue._id}`, { token: other })).status, 404, 'bystander');
+    eq((await call('GET', `/${filed.body.issue._id}`, { token: student })).status, 200, 'reporter');
+    eq((await call('GET', `/${filed.body.issue._id}`, { token: admin })).status, 200, 'admin');
+  });
+
+  await test('after approval the report reaches every student board and leaves the queue', async () => {
+    documents.length = 0;
+    const filed = await fileReport();
+    const id = filed.body.issue._id;
+
+    const review = await call('PATCH', `/${id}/moderation`, {
+      token: admin,
+      body: { decision: 'approve', note: 'Confirmed with the block supervisor.' },
+    });
+    eq(review.status, 200, 'review status');
+    eq(review.body.issue.moderation.state, 'approved', 'published');
+    eq(review.body.issue.moderation.note, 'Confirmed with the block supervisor.', 'note kept');
+    eq(review.body.issue.moderation.reviewedBy.name, 'Arjun Rao', 'reviewer recorded');
+
+    // The queue the admin was looking at is now empty...
+    const queue = await call('GET', '?moderation=pending', { token: admin });
+    eq(queue.body.total, 0, 'queue drained');
+
+    // ...and the student board is where the report now shows up.
+    const bystander = await call('GET', '', { token: other });
+    eq(bystander.body.total, 1, 'visible to other students');
+    eq(bystander.body.issues[0]._id, id, 'same report');
+    eq(bystander.body.issues[0].moderation.state, 'approved', 'published');
+
+    const mine = await callRoot('GET', '/my/issues', { token: student });
+    eq(mine.body.total, 1, 'still in the reporter\'s own list');
+  });
+
+  await test('the pendingCount stat matches the queue for an admin and is 0 for a student', async () => {
+    documents.length = 0;
+    // getStats reads Report.aggregate, which the harness stubs out to [], so the
+    // count is asserted through countDocuments — the same call the real handler
+    // makes for pendingCount.
+    await fileReport({ title: 'Lift door closing too fast', location: 'Library' });
+    await fileReport({ title: 'Broken handrail near stairs', location: 'Staircase' });
+    eq(await Report.countDocuments({ 'moderation.state': 'pending' }), 2, 'two reports await review');
+  });
+
+  await test('a rejected report keeps the student informed and never reaches the board', async () => {
+    documents.length = 0;
+    const filed = await fileReport();
+    const id = filed.body.issue._id;
+
+    const review = await call('PATCH', `/${id}/moderation`, {
+      token: admin,
+      body: { decision: 'reject', note: 'Please add a photo so we can verify it.' },
+    });
+    eq(review.body.issue.moderation.state, 'rejected', 'rejected');
+
+    const bystander = await call('GET', '', { token: other });
+    eq(bystander.body.total, 0, 'still off the board');
+
+    // The reporter is told why, which is the whole point of the gate.
+    const mine = await callRoot('GET', '/my/issues', { token: student });
+    eq(mine.body.issues[0].moderation.state, 'rejected', 'reporter sees the state');
+    eq(mine.body.issues[0].moderation.note, 'Please add a photo so we can verify it.', 'reporter sees the note');
+
+    // A bystander must not learn the note exists.
+    const strangerDetail = await call('GET', `/${id}`, { token: other });
+    eq(strangerDetail.status, 404, 'bystander cannot open it at all');
   });
 
   // ── Read: one report in full ─────────────────────────────────────────────

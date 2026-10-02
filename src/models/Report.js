@@ -130,7 +130,11 @@ const reportSchema = new mongoose.Schema(
       state: {
         type: String,
         enum: MODERATION_STATES,
-        default: 'approved',
+        // Anything created without an explicit state waits for an admin
+        // decision. Documents written before the gate existed have no
+        // `moderation` field at all and stay published — read them with
+        // moderationStateOf()/PUBLISHED_FILTER, never with this default.
+        default: 'pending',
       },
       reviewedBy: {
         type: mongoose.Schema.Types.ObjectId,

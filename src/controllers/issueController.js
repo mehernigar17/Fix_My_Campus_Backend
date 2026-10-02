@@ -99,11 +99,9 @@ const findIssueOr404 = async (id) => {
 /**
  * POST /issues  (protected, multipart/form-data)
  * Create a new issue with title, description, category, location and an
- * optional photo. Reports are published as soon as they are filed
- * (`moderation.state: 'approved'`), so a student's report reaches both the
- * campus board and the admin queue immediately. The review gate is still
- * available for reports an admin wants to pull back off the board
- * (PATCH /issues/:id/moderation).
+ * optional photo. A report is filed as `pending`: it is private to its
+ * reporter and to admins, and it stays off the campus board until an admin
+ * approves it with PATCH /issues/:id/moderation.
  */
 const createIssue = async (req, res) => {
   try {
@@ -168,7 +166,10 @@ const createIssue = async (req, res) => {
       category,
       location,
       reportedBy: req.user._id,
-      moderation: { state: 'approved' },
+      // The review gate. A filed report waits for an admin decision: creating
+      // it pre-approved would publish it to the board immediately and leave
+      // the admin queue permanently empty, so there'd be nothing to approve.
+      moderation: { state: 'pending' },
       photo: req.file
         ? {
             filename: req.file.filename,
