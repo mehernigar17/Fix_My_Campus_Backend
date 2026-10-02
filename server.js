@@ -1,10 +1,13 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const connectDB = require('./src/config/db');
 
 // ── Route Imports ──
 const authRoutes = require('./src/routes/authRoutes');
+const issueRoutes = require('./src/routes/issueRoutes');
+const userRoutes = require('./src/routes/userRoutes');
 
 const app = express();
 
@@ -33,7 +36,18 @@ app.get('/api/health', (req, res) => {
 });
 
 // ── API Routes ──
+// Mounted twice so both POST /auth/login and POST /api/auth/login resolve.
+app.use('/auth', authRoutes);
 app.use('/api/auth', authRoutes);
+
+// Issues: /issues, /api/issues, /my/issues, /api/my/issues, /stats, /api/stats
+app.use('/issues', issueRoutes);
+app.use('/api/issues', issueRoutes);
+app.use(userRoutes);
+app.use('/api', userRoutes);
+
+// ── Static Files: uploaded report photos ──
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { maxAge: '7d' }));
 
 // ── 404 Handler ──
 app.use((req, res) => {
@@ -52,7 +66,7 @@ app.use((err, req, res, next) => {
 // ── Start Server ──
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`🚀 FixMyCampus API running on http://localhost:${PORT}`);
+  console.log(`🚀FixMyCampus API running on http://localhost:${PORT}`);
   console.log(`📦 Environment: ${process.env.NODE_ENV}`);
 });
 

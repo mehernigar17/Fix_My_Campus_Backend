@@ -39,6 +39,9 @@ router.post('/login', loginValidation, login);
 // POST /api/auth/register
 router.post('/register', registerValidation, register);
 
+// POST /api/auth/signup  (alias of /register)
+router.post('/signup', registerValidation, register);
+
 // GET /api/auth/me  (protected)
 router.get('/me', protect, getMe);
 

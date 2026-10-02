@@ -4,6 +4,10 @@
  */
 require('dotenv').config();
 const mongoose = require('mongoose');
+const dns = require('dns');
+
+// Force public DNS so MongoDB Atlas SRV records resolve (same fix as src/config/db.js)
+dns.setServers(['8.8.8.8', '8.8.4.4']);
 const User = require('./src/models/User');
 
 const seedUsers = [
