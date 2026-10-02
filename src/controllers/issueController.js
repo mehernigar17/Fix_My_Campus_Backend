@@ -89,8 +89,26 @@ const listIssues = async (req, res) => {
 
     const filter = {};
     if (req.query.category) filter.category = req.query.category;
-    if (req.query.status) filter.status = req.query.status;
-    if (req.query.search) filter.$text = { $search: req.query.search };
+    if (req.query.status) {
+      const s = req.query.status.trim();
+      if (s.toLowerCase() === 'open') {
+        filter.status = { $in: ['open', 'Open'] };
+      } else if (s.toLowerCase() === 'in progress' || s.toLowerCase() === 'in_progress') {
+        filter.status = { $in: ['in_progress', 'In Progress'] };
+      } else if (s.toLowerCase() === 'resolved') {
+        filter.status = { $in: ['resolved', 'Resolved'] };
+      } else {
+        filter.status = s;
+      }
+    }
+    if (req.query.search) {
+      const safe = req.query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.$or = [
+        { title: new RegExp(safe, 'i') },
+        { description: new RegExp(safe, 'i') },
+        { location: new RegExp(safe, 'i') },
+      ];
+    }
     if (req.query.location) {
       // Case-insensitive partial match so "room 204" finds "Block B, Room 204"
       const safe = req.query.location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -372,7 +390,8 @@ const updateIssueStatus = async (req, res) => {
     const { status, resolutionNote } = req.body;
     issue.status = status;
     if (resolutionNote !== undefined) issue.resolutionNote = resolutionNote;
-    issue.resolvedAt = status === 'resolved' ? new Date() : null;
+    const isResolved = status === 'resolved' || status === 'Resolved';
+    issue.resolvedAt = isResolved ? (issue.resolvedAt || new Date()) : null;
 
     await issue.save();
     await issue.populate('reportedBy', 'name email');
@@ -396,8 +415,27 @@ const listMyIssues = async (req, res) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
 
     const filter = { reportedBy: req.user._id };
-    if (req.query.status) filter.status = req.query.status;
+    if (req.query.status) {
+      const s = req.query.status.trim();
+      if (s.toLowerCase() === 'open') {
+        filter.status = { $in: ['open', 'Open'] };
+      } else if (s.toLowerCase() === 'in progress' || s.toLowerCase() === 'in_progress') {
+        filter.status = { $in: ['in_progress', 'In Progress'] };
+      } else if (s.toLowerCase() === 'resolved') {
+        filter.status = { $in: ['resolved', 'Resolved'] };
+      } else {
+        filter.status = s;
+      }
+    }
     if (req.query.category) filter.category = req.query.category;
+    if (req.query.search) {
+      const safe = req.query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.$or = [
+        { title: new RegExp(safe, 'i') },
+        { description: new RegExp(safe, 'i') },
+        { location: new RegExp(safe, 'i') },
+      ];
+    }
     if (req.query.location) {
       const safe = req.query.location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.location = new RegExp(safe, 'i');
@@ -447,7 +485,7 @@ const getStats = async (req, res) => {
           .limit(5),
         // Average time from report to resolution, in days
         Report.aggregate([
-          { $match: { ...scope, status: 'resolved', resolvedAt: { $ne: null } } },
+          { $match: { ...scope, status: { $in: ['resolved', 'Resolved'] }, resolvedAt: { $ne: null } } },
           {
             $group: {
               _id: null,
@@ -455,11 +493,35 @@ const getStats = async (req, res) => {
             },
           },
         ]),
-        Report.countDocuments({ ...scope, status: 'resolved', resolvedAt: { $gte: thirtyDaysAgo } }),
+        Report.countDocuments({ ...scope, status: { $in: ['resolved', 'Resolved'] }, resolvedAt: { $gte: thirtyDaysAgo } }),
       ]);
 
-    const statusCounts = { open: 0, in_progress: 0, resolved: 0 };
-    byStatus.forEach((s) => { statusCounts[s._id] = s.count; });
+    const statusCounts = {
+      open: 0,
+      in_progress: 0,
+      resolved: 0,
+      Open: 0,
+      'In Progress': 0,
+      Resolved: 0,
+    };
+    let totalIssues = 0;
+    byStatus.forEach((s) => {
+      const count = s.count || 0;
+      totalIssues += count;
+      const key = String(s._id).toLowerCase();
+      if (key === 'open') {
+        statusCounts.open += count;
+        statusCounts.Open += count;
+      } else if (key === 'in_progress' || key === 'in progress') {
+        statusCounts.in_progress += count;
+        statusCounts['In Progress'] += count;
+      } else if (key === 'resolved') {
+        statusCounts.resolved += count;
+        statusCounts.Resolved += count;
+      } else if (s._id) {
+        statusCounts[s._id] = count;
+      }
+    });
 
     const categoryCounts = {};
     byCategory.forEach((c) => { categoryCounts[c._id] = c.count; });
@@ -470,7 +532,7 @@ const getStats = async (req, res) => {
         : null;
 
     res.status(200).json({
-      total: Object.values(statusCounts).reduce((a, b) => a + b, 0),
+      total: totalIssues,
       byStatus: statusCounts,
       byCategory: categoryCounts,
       resolvedThisMonth,

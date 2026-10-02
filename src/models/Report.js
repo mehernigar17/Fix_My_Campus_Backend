@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const CATEGORIES = ['Electrical', 'Water', 'Cleanliness', 'Furniture', 'Internet', 'Other'];
-const STATUSES = ['open', 'in_progress', 'resolved'];
+const STATUSES = ['open', 'in_progress', 'resolved', 'Open', 'In Progress', 'Resolved'];
 
 // ── Report Schema (Model) ──
 const reportSchema = new mongoose.Schema(
