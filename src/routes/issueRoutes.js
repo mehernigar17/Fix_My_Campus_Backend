@@ -11,10 +11,11 @@ const {
   listComments,
   deleteComment,
   updateIssueStatus,
+  reviewIssue,
 } = require('../controllers/issueController');
 const { protect } = require('../middleware/authMiddleware');
 const { withPhotoUpload } = require('../middleware/uploadMiddleware');
-const { CATEGORIES, STATUSES } = require('../models/Report');
+const { CATEGORIES, STATUSES, MODERATION_STATES } = require('../models/Report');
 
 const router = express.Router();
 
@@ -71,6 +72,16 @@ const commentValidation = [
     .isLength({ max: 1000 }).withMessage('Comment cannot exceed 1000 characters.'),
 ];
 
+// The admin review decision: 'approve' publishes the report to the campus
+// board, 'reject' keeps it off the board and shows the note to the reporter.
+const moderationValidation = [
+  body('decision')
+    .notEmpty().withMessage('Decision is required.')
+    .isIn(['approve', 'reject']).withMessage('Decision must be either approve or reject.'),
+  body('note').optional().trim().isLength({ max: 500 })
+    .withMessage('Review note cannot exceed 500 characters.'),
+];
+
 const idParam = param('id').isMongoId().withMessage('Invalid issue id.');
 const commentIdParam = param('commentId')
   .isMongoId()
@@ -106,6 +117,10 @@ const listValidation = [
   query('search').optional().trim().isLength({ max: 100 }).withMessage('Search is too long.'),
   query('location').optional().trim().isLength({ max: 160 }).withMessage('Location filter is too long.'),
   query('sort').optional().isIn(['newest', 'oldest', 'upvotes']).withMessage('Invalid sort option.'),
+  // Admin-only review filter; the controller rejects it for anyone else.
+  query('moderation').optional()
+    .isIn([...MODERATION_STATES, 'all'])
+    .withMessage(`Review filter must be one of: ${MODERATION_STATES.join(', ')}.`),
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be 1 or greater.'),
   query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100.'),
 ];
@@ -123,6 +138,11 @@ router.get('/', protect, listValidation, check, listIssues);
 router.get('/categories', (req, res) => {
   res.status(200).json({ categories: CATEGORIES, statuses: STATUSES });
 });
+
+// GET /issues/pending — the admin review queue (admin only).
+// Express 5 re-parses req.query on every access, so the forced filter is a
+// third argument instead of a rewrite of the query object.
+router.get('/pending', protect, listValidation, check, (req, res) => listIssues(req, res, 'pending'));
 
 // GET /issues/:id
 router.get('/:id', protect, idParam, check, getIssue);
@@ -147,5 +167,9 @@ router.delete('/:id/comments/:commentId', protect, idParam, commentIdParam, chec
 
 // PATCH /issues/:id/status — admin only
 router.patch('/:id/status', protect, idParam, normalizeStatusBody, statusValidation, check, updateIssueStatus);
+
+// PATCH /issues/:id/moderation — admin only. Approve publishes the report to
+// the campus board, reject keeps it off and shows the note to the reporter.
+router.patch('/:id/moderation', protect, idParam, moderationValidation, check, reviewIssue);
 
 module.exports = router;

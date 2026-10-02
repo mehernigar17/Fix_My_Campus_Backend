@@ -3,6 +3,20 @@ const mongoose = require('mongoose');
 const CATEGORIES = ['Electrical', 'Water', 'Cleanliness', 'Furniture', 'Internet', 'Other'];
 const STATUSES = ['open', 'in_progress', 'resolved', 'Open', 'In Progress', 'Resolved'];
 
+// ── Moderation (admin review before a report reaches the campus board) ──
+// A report is filed as `pending` and stays off the public board until an
+// admin approves it. `rejected` reports are hidden too — the reporter can
+// still see why, and editing one sends it back for review.
+const MODERATION_STATES = ['pending', 'approved', 'rejected'];
+
+// Reports filed before the moderation gate existed have no `moderation`
+// field at all. They were published the moment they were filed, so they
+// stay published: the public filter matches "no field" as well as
+// "approved". `scripts/backfill-moderation.js` normalises them.
+const PUBLISHED_FILTER = {
+  $or: [{ moderation: { $exists: false } }, { 'moderation.state': 'approved' }],
+};
+
 // ── Duplicate detection ──
 // Two reports describe the same problem when they name the same thing in the
 // same place: the same category, plus a title and location that match once
@@ -72,6 +86,33 @@ const reportSchema = new mongoose.Schema(
       maxlength: [1000, 'Resolution note cannot exceed 1000 characters'],
       default: '',
     },
+    // ── Moderation gate ──
+    // Nothing reaches the campus board until an admin approves it. Only the
+    // reporter and admins can see a report while it is `pending`, and the
+    // review trail (who decided, when, why) lives here.
+    moderation: {
+      state: {
+        type: String,
+        enum: MODERATION_STATES,
+        default: 'pending',
+      },
+      reviewedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+      },
+      reviewedAt: {
+        type: Date,
+        default: null,
+      },
+      // Why an admin approved or turned a report down — shown to the reporter
+      reviewNote: {
+        type: String,
+        trim: true,
+        maxlength: [500, 'Review note cannot exceed 500 characters'],
+        default: '',
+      },
+    },
     reportedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -122,6 +163,7 @@ reportSchema.index({ category: 1, status: 1 });
 reportSchema.index({ reportedBy: 1, createdAt: -1 });
 reportSchema.index({ title: 'text', description: 'text', location: 'text' });
 reportSchema.index({ upvoteCount: -1, createdAt: -1 });
+reportSchema.index({ 'moderation.state': 1, createdAt: -1 });
 
 // ── Instance Method: Public JSON shape ──
 reportSchema.methods.toPublicObject = function () {
@@ -141,6 +183,14 @@ reportSchema.methods.toPublicObject = function () {
       : null,
     status: this.status,
     resolutionNote: this.resolutionNote,
+    // `note` and `reviewedBy` are stripped by the controller for anyone who
+    // is neither the reporter nor an admin — see serialize() in issueController.
+    moderation: {
+      state: this.moderation?.state || 'approved',
+      reviewedAt: this.moderation?.reviewedAt || null,
+      reviewedBy: this.moderation?.reviewedBy || null,
+      note: this.moderation?.reviewNote || '',
+    },
     upvoteCount: this.upvoteCount ?? this.upvotes?.length ?? 0,
     upvotedByMe: false, // set per-request by the controller when req.user is known
     commentCount: (this.comments || []).length,
@@ -187,5 +237,18 @@ module.exports = Report;
 module.exports.CATEGORIES = CATEGORIES;
 module.exports.STATUSES = STATUSES;
 module.exports.UNRESOLVED_STATUSES = UNRESOLVED_STATUSES;
+module.exports.MODERATION_STATES = MODERATION_STATES;
+module.exports.PUBLISHED_FILTER = PUBLISHED_FILTER;
 module.exports.normalizeForCompare = normalizeForCompare;
 module.exports.duplicateKey = duplicateKey;
+
+/**
+ * The moderation state of a document, defaulting to 'approved' for reports
+ * filed before the gate existed. Safe on plain objects and query results.
+ */
+Report.moderationStateOf = (doc) => doc?.moderation?.state || 'approved';
+
+/**
+ * True when the report may appear on the public campus board.
+ */
+Report.isPublished = (doc) => Report.moderationStateOf(doc) === 'approved';

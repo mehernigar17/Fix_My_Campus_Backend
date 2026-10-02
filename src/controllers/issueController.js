@@ -4,11 +4,39 @@ const { buildPhotoUrl, deletePhotoFile } = require('../middleware/uploadMiddlewa
 
 // ── Controller: Issues ──
 
+// The review trail is private: only the reporter and admins learn who reviewed
+// a report or why it was turned down.
+const canSeeReviewDetail = (report, viewer) =>
+  !!viewer &&
+  (viewer.role === 'admin' || String(report.reportedBy?._id || report.reportedBy) === String(viewer._id));
+
 // Shapes a report for the response, marking whether the current user upvoted it.
-const serialize = (report, userId) => {
+const serialize = (report, viewer) => {
   const obj = report.toPublicObject();
+  const userId = viewer?._id;
   obj.upvotedByMe = (report.upvotes || []).some((u) => String(u.user) === String(userId));
+
+  if (!canSeeReviewDetail(report, viewer)) {
+    obj.moderation.reviewedBy = null;
+    obj.moderation.note = '';
+  } else if (obj.moderation.reviewedBy?._id) {
+    obj.moderation.reviewedBy = {
+      _id: obj.moderation.reviewedBy._id,
+      name: obj.moderation.reviewedBy.name,
+    };
+  }
+
   return obj;
+};
+
+// Who is allowed to see a report at all. A report that is still awaiting
+// admin review is private to its reporter and to admins — everyone else
+// must not learn that it exists.
+const canViewIssue = (issue, viewer) => {
+  if (Report.isPublished(issue)) return true;
+  if (viewer?.role === 'admin') return true;
+  const owner = issue.reportedBy?._id || issue.reportedBy;
+  return !!viewer && !!owner && String(owner) === String(viewer._id);
 };
 
 // Shapes a single comment (user is populated with name + email).
@@ -28,7 +56,9 @@ const findIssueOr404 = async (id) => {
 
 /**
  * POST /issues  (protected, multipart/form-data)
- * Create a new issue with title, description, category, location and an optional photo.
+ * Create a new issue with title, description, category, location and an
+ * optional photo. It is filed as `pending`: it stays off the campus board
+ * until an admin approves it (PATCH /issues/:id/moderation).
  */
 const createIssue = async (req, res) => {
   try {
@@ -46,12 +76,44 @@ const createIssue = async (req, res) => {
     const existing = await Report.findActiveDuplicate({ title, location, category });
     if (existing) {
       if (req.file) deletePhotoFile(req.file.filename);
+
+      const isOwner = String(existing.reportedBy) === String(req.user._id);
+      const isPublished = Report.isPublished(existing);
+
+      // Your own report — the only case where a pending duplicate may be shown
+      // back to you, because you filed it.
+      if (isOwner) {
+        if (isPublished) {
+          await existing.populate('reportedBy', 'name email');
+          return res.status(409).json({
+            message:
+              'You already reported this problem. Upvote your existing report instead of filing a duplicate.',
+            code: 'DUPLICATE_ISSUE',
+            duplicateOf: serialize(existing, req.user),
+          });
+        }
+        return res.status(409).json({
+          message: 'You already have a report waiting for review on this problem.',
+          code: 'DUPLICATE_PENDING',
+        });
+      }
+
+      // Someone else's report that is still awaiting review must stay private:
+      // confirm the problem is known, but reveal no details, location or author.
+      if (!isPublished && req.user.role !== 'admin') {
+        return res.status(409).json({
+          message:
+            'Someone has already reported this problem and campus staff are checking it.',
+          code: 'DUPLICATE_PENDING',
+        });
+      }
+
       await existing.populate('reportedBy', 'name email');
       return res.status(409).json({
         message:
           'This problem is already reported. Upvote the existing report instead of creating a duplicate.',
         code: 'DUPLICATE_ISSUE',
-        duplicateOf: serialize(existing, req.user._id),
+        duplicateOf: serialize(existing, req.user),
       });
     }
 
@@ -61,6 +123,7 @@ const createIssue = async (req, res) => {
       category,
       location,
       reportedBy: req.user._id,
+      moderation: { state: 'pending' },
       photo: req.file
         ? {
             filename: req.file.filename,
@@ -74,8 +137,8 @@ const createIssue = async (req, res) => {
     await issue.populate('reportedBy', 'name email');
 
     res.status(201).json({
-      message: 'Issue created successfully.',
-      issue: serialize(issue, req.user._id),
+      message: 'Report submitted. Campus staff will review it before it goes on the board.',
+      issue: serialize(issue, req.user),
     });
   } catch (error) {
     if (req.file) deletePhotoFile(req.file.filename);
@@ -88,11 +151,14 @@ const createIssue = async (req, res) => {
 };
 
 /**
- * GET /issues?search=&category=&status=&page=&limit=&sort=
- * Campus board: every signed-in user can browse every issue so that upvotes
- * and filters are meaningful. `mine=true` narrows the list to the caller.
+ * GET /issues?search=&category=&status=&page=&limit=&sort=&moderation=
+ * Campus board: every signed-in user can browse every *approved* issue so
+ * that upvotes and filters are meaningful. `mine=true` narrows the list to
+ * the caller, who also sees their own reports while those are still
+ * awaiting admin review. `moderation` is an admin-only queue filter; the
+ * optional third argument forces one (GET /issues/pending).
  */
-const listIssues = async (req, res) => {
+const listIssues = async (req, res, moderationOverride) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -101,8 +167,14 @@ const listIssues = async (req, res) => {
 
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+    const isAdmin = req.user.role === 'admin';
+    const mine = req.query.mine === 'true';
 
     const filter = {};
+    // Conditions that can each carry their own $or go into $and, so a keyword
+    // search and the moderation gate can both be applied at the same time.
+    const conditions = [];
+
     if (req.query.category) filter.category = req.query.category;
     if (req.query.status) {
       // Accepts "open", "Open", "in_progress", "In Progress", "resolved", …
@@ -119,11 +191,13 @@ const listIssues = async (req, res) => {
     }
     if (req.query.search) {
       const safe = req.query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      filter.$or = [
-        { title: new RegExp(safe, 'i') },
-        { description: new RegExp(safe, 'i') },
-        { location: new RegExp(safe, 'i') },
-      ];
+      conditions.push({
+        $or: [
+          { title: new RegExp(safe, 'i') },
+          { description: new RegExp(safe, 'i') },
+          { location: new RegExp(safe, 'i') },
+        ],
+      });
     }
     if (req.query.location) {
       // Case-insensitive partial match so "room 204" finds "Block B, Room 204"
@@ -131,9 +205,28 @@ const listIssues = async (req, res) => {
       filter.location = new RegExp(safe, 'i');
     }
     // The campus board is shared; `mine=true` narrows it to the caller's own
-    if (req.query.mine === 'true') {
+    if (mine) {
       filter.reportedBy = req.user._id;
     }
+
+    // ── Moderation gate ──
+    const moderation = moderationOverride || req.query.moderation;
+    if (moderation && !isAdmin) {
+      return res.status(403).json({ message: 'Only an admin can browse reports by review state.' });
+    }
+    if (isAdmin) {
+      // Admins work the whole queue: they see pending, approved and rejected
+      // reports unless they narrow it down.
+      if (moderation && moderation !== 'all') {
+        filter['moderation.state'] = moderation;
+      }
+    } else if (!mine) {
+      // Everyone else sees the published board only. A reporter's own list
+      // (`mine=true`) also shows their reports while those await review.
+      conditions.push(Report.PUBLISHED_FILTER);
+    }
+
+    if (conditions.length) filter.$and = conditions;
 
     const sortMap = {
       newest: { createdAt: -1 },
@@ -143,6 +236,7 @@ const listIssues = async (req, res) => {
 
     const query = Report.find(filter)
       .populate('reportedBy', 'name email')
+      .populate('moderation.reviewedBy', 'name')
       .populate('comments.user', 'name email')
       .sort(sortMap[req.query.sort] || sortMap.newest);
 
@@ -156,7 +250,7 @@ const listIssues = async (req, res) => {
       total,
       page,
       pages: Math.ceil(total / limit) || 1,
-      issues: issues.map((i) => serialize(i, req.user._id)),
+      issues: issues.map((i) => serialize(i, req.user)),
     });
   } catch (error) {
     console.error('ListIssues error:', error);
@@ -165,19 +259,23 @@ const listIssues = async (req, res) => {
 };
 
 /**
- * GET /issues/:id  (protected — any logged-in user can browse issues)
+ * GET /issues/:id  (protected)
+ * Anyone signed in can open an approved report. A report still awaiting
+ * admin review is private to its reporter and to admins — everyone else
+ * gets the same 404 as for a report that does not exist.
  */
 const getIssue = async (req, res) => {
   try {
     const issue = await findIssueOr404(req.params.id);
-    if (!issue) {
+    if (!issue || !canViewIssue(issue, req.user)) {
       return res.status(404).json({ message: 'Issue not found.' });
     }
 
     await issue.populate('reportedBy', 'name email');
+    await issue.populate('moderation.reviewedBy', 'name');
     await issue.populate('comments.user', 'name email');
 
-    res.status(200).json({ issue: serialize(issue, req.user._id) });
+    res.status(200).json({ issue: serialize(issue, req.user) });
   } catch (error) {
     console.error('GetIssue error:', error);
     res.status(500).json({ message: 'Server error. Please try again later.' });
@@ -220,7 +318,7 @@ const updateIssue = async (req, res) => {
         message:
           'Another report already covers this problem. Upvote it instead of editing this report into a duplicate.',
         code: 'DUPLICATE_ISSUE',
-        duplicateOf: serialize(clash, req.user._id),
+        duplicateOf: serialize(clash, req.user),
       });
     }
 
@@ -229,12 +327,27 @@ const updateIssue = async (req, res) => {
     issue.category = category;
     issue.location = location;
 
+    // Fixing a report that was turned down sends it back for review, so the
+    // board can never pick up an edit nobody has looked at. An approved
+    // report stays published.
+    const resubmitted = Report.moderationStateOf(issue) === 'rejected';
+    if (resubmitted) {
+      issue.moderation = {
+        state: 'pending',
+        reviewedBy: null,
+        reviewedAt: null,
+        reviewNote: '',
+      };
+    }
+
     await issue.save();
     await issue.populate('reportedBy', 'name email');
 
     res.status(200).json({
-      message: 'Issue updated successfully.',
-      issue: serialize(issue, req.user._id),
+      message: resubmitted
+        ? 'Report updated and sent back for review.'
+        : 'Issue updated successfully.',
+      issue: serialize(issue, req.user),
     });
   } catch (error) {
     if (error.name === 'ValidationError') {
@@ -272,12 +385,14 @@ const deleteIssue = async (req, res) => {
 
 /**
  * POST /issues/:id/upvote  (protected)
- * One upvote per user — calling it again removes the upvote.
+ * One upvote per user — calling it again removes the upvote. Support for an
+ * unapproved report is pointless (nobody else can see it yet), so it is
+ * reserved for the reporter and admins.
  */
 const toggleUpvote = async (req, res) => {
   try {
     const issue = await findIssueOr404(req.params.id);
-    if (!issue) {
+    if (!issue || !canViewIssue(issue, req.user)) {
       return res.status(404).json({ message: 'Issue not found.' });
     }
 
@@ -313,7 +428,7 @@ const addComment = async (req, res) => {
     }
 
     const issue = await findIssueOr404(req.params.id);
-    if (!issue) {
+    if (!issue || !canViewIssue(issue, req.user)) {
       return res.status(404).json({ message: 'Issue not found.' });
     }
 
@@ -330,7 +445,7 @@ const addComment = async (req, res) => {
       message: 'Comment added successfully.',
       comment: serializeComment(created),
       commentCount: issue.comments.length,
-      issue: serialize(issue, req.user._id),
+      issue: serialize(issue, req.user),
     });
   } catch (error) {
     if (error.name === 'ValidationError') {
@@ -348,7 +463,7 @@ const addComment = async (req, res) => {
 const listComments = async (req, res) => {
   try {
     const issue = await findIssueOr404(req.params.id);
-    if (!issue) {
+    if (!issue || !canViewIssue(issue, req.user)) {
       return res.status(404).json({ message: 'Issue not found.' });
     }
 
@@ -379,7 +494,7 @@ const listComments = async (req, res) => {
 const deleteComment = async (req, res) => {
   try {
     const issue = await findIssueOr404(req.params.id);
-    if (!issue) {
+    if (!issue || !canViewIssue(issue, req.user)) {
       return res.status(404).json({ message: 'Issue not found.' });
     }
 
@@ -405,6 +520,9 @@ const deleteComment = async (req, res) => {
 
 /**
  * PATCH /issues/:id/status  (protected, admin only)
+ * Work state only. Approving a report for the board is a separate decision
+ * made with PATCH /issues/:id/moderation — moving a pending report to
+ * "Resolved" must not publish it.
  */
 const updateIssueStatus = async (req, res) => {
   try {
@@ -433,7 +551,7 @@ const updateIssueStatus = async (req, res) => {
 
     res.status(200).json({
       message: 'Issue status updated successfully.',
-      issue: serialize(issue, req.user._id),
+      issue: serialize(issue, req.user),
     });
   } catch (error) {
     console.error('UpdateIssueStatus error:', error);
@@ -442,7 +560,69 @@ const updateIssueStatus = async (req, res) => {
 };
 
 /**
- * GET /my/issues  (protected) — the logged-in user's issues
+ * PATCH /issues/:id/moderation  (protected, admin only)
+ * The review gate. `decision: 'approve'` publishes the report to the campus
+ * board; `'reject'` keeps it off the board and the reporter sees the note.
+ * Either decision can be reversed later — the report simply moves between
+ * pending, approved and rejected.
+ */
+const reviewIssue = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ message: errors.array()[0].msg, errors: errors.array() });
+    }
+
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied. Only an admin can review reports.' });
+    }
+
+    const issue = await findIssueOr404(req.params.id);
+    if (!issue) {
+      return res.status(404).json({ message: 'Issue not found.' });
+    }
+
+    const { decision, note } = req.body;
+    const state = decision === 'approve' ? 'approved' : 'rejected';
+    const wasPublished = Report.isPublished(issue);
+
+    issue.moderation = {
+      state,
+      reviewedBy: req.user._id,
+      reviewedAt: new Date(),
+      reviewNote: note || '',
+    };
+
+    await issue.save();
+    await issue.populate('reportedBy', 'name email');
+    await issue.populate('moderation.reviewedBy', 'name');
+
+    // Pulling a published report back off the board is a real change the
+    // reporter should hear about, so the message says what happened.
+    const message =
+      state === 'approved'
+        ? wasPublished
+          ? 'Report is approved and live on the campus board.'
+          : 'Report approved. It is now live on the campus board.'
+        : 'Report rejected. It stays off the campus board and the student can see your note.';
+
+    res.status(200).json({
+      message,
+      issue: serialize(issue, req.user),
+    });
+  } catch (error) {
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ message: Object.values(error.errors)[0].message });
+    }
+    console.error('ReviewIssue error:', error);
+    res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+};
+
+/**
+ * GET /my/issues  (protected) — the logged-in user's issues.
+ * Includes reports still awaiting admin review and reports that were
+ * rejected, so the reporter can always see what happened to their report.
  */
 const listMyIssues = async (req, res) => {
   try {
@@ -479,6 +659,7 @@ const listMyIssues = async (req, res) => {
     const [issues, total] = await Promise.all([
       Report.find(filter)
         .populate('reportedBy', 'name email')
+        .populate('moderation.reviewedBy', 'name')
         .populate('comments.user', 'name email')
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
@@ -491,7 +672,7 @@ const listMyIssues = async (req, res) => {
       total,
       page,
       pages: Math.ceil(total / limit) || 1,
-      issues: issues.map((i) => serialize(i, req.user._id)),
+      issues: issues.map((i) => serialize(i, req.user)),
     });
   } catch (error) {
     console.error('ListMyIssues error:', error);
@@ -503,13 +684,18 @@ const listMyIssues = async (req, res) => {
  * GET /stats  (protected)
  * Campus-wide counts by status and category, plus the most upvoted issues,
  * how many were resolved in the last 30 days and the average resolution time.
+ * Students count the published board; admins additionally get the size of
+ * the review queue.
  */
 const getStats = async (req, res) => {
   try {
-    const scope = {};
+    const isAdmin = req.user.role === 'admin';
+    // An unapproved report is not on the board, so it must not inflate the
+    // campus numbers either. Admins see the whole picture.
+    const scope = isAdmin ? {} : Report.PUBLISHED_FILTER;
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-    const [byStatus, byCategory, topUpvoted, avgResolution, resolvedThisMonth] =
+    const [byStatus, byCategory, topUpvoted, avgResolution, resolvedThisMonth, upvoteTotals, pendingCount] =
       await Promise.all([
         Report.aggregate([{ $match: scope }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
         Report.aggregate([{ $match: scope }, { $group: { _id: '$category', count: { $sum: 1 } } }]),
@@ -520,7 +706,7 @@ const getStats = async (req, res) => {
           .limit(5),
         // Average time from report to resolution, in days
         Report.aggregate([
-          { $match: { ...scope, status: { $in: ['resolved', 'Resolved'] }, resolvedAt: { $ne: null } } },
+          { $match: { $and: [scope, { status: { $in: ['resolved', 'Resolved'] }, resolvedAt: { $ne: null } }] } },
           {
             $group: {
               _id: null,
@@ -528,7 +714,18 @@ const getStats = async (req, res) => {
             },
           },
         ]),
-        Report.countDocuments({ ...scope, status: { $in: ['resolved', 'Resolved'] }, resolvedAt: { $gte: thirtyDaysAgo } }),
+        Report.countDocuments({ $and: [scope, { status: { $in: ['resolved', 'Resolved'] }, resolvedAt: { $gte: thirtyDaysAgo } }] }),
+        // Total community support across the whole board, for the admin overview
+        isAdmin
+          ? Report.aggregate([{ $group: { _id: null, totalUpvotes: { $sum: '$upvoteCount' } } }])
+          : Report.aggregate([
+              { $match: scope },
+              { $group: { _id: null, totalUpvotes: { $sum: '$upvoteCount' } } },
+            ]),
+        // Reports waiting for an admin decision — admin only
+        isAdmin
+          ? Report.countDocuments({ 'moderation.state': 'pending' })
+          : Promise.resolve(0),
       ]);
 
     const statusCounts = {
@@ -572,7 +769,10 @@ const getStats = async (req, res) => {
       byCategory: categoryCounts,
       resolvedThisMonth,
       avgResolutionDays,
-      topUpvoted: topUpvoted.map((i) => serialize(i, req.user._id)),
+      totalUpvotes: upvoteTotals[0]?.totalUpvotes ?? 0,
+      // 0 for students: the review queue is not campus information.
+      pendingCount: isAdmin ? pendingCount : 0,
+      topUpvoted: topUpvoted.map((i) => serialize(i, req.user)),
     });
   } catch (error) {
     console.error('GetStats error:', error);
@@ -591,6 +791,7 @@ module.exports = {
   listComments,
   deleteComment,
   updateIssueStatus,
+  reviewIssue,
   listMyIssues,
   getStats,
 };
