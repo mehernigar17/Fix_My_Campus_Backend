@@ -9,7 +9,7 @@ const router = express.Router();
 
 // Mounted at the app root: /my/issues and /stats (plus their /api equivalents via server.js)
 
-// GET /my/issues — the logged-in user's issues
+// GET /my/issues?status=&category=&location=&page=&limit= — the logged-in user's issues
 router.get('/my/issues', protect, listMyIssues);
 
 // GET /stats — counts by status and category, plus top upvoted issues

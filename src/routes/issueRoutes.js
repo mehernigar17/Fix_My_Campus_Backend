@@ -75,6 +75,7 @@ const listValidation = [
   query('category').optional().isIn(CATEGORIES).withMessage('Invalid category filter.'),
   query('status').optional().isIn(STATUSES).withMessage('Invalid status filter.'),
   query('search').optional().trim().isLength({ max: 100 }).withMessage('Search is too long.'),
+  query('location').optional().trim().isLength({ max: 160 }).withMessage('Location filter is too long.'),
   query('sort').optional().isIn(['newest', 'oldest', 'upvotes']).withMessage('Invalid sort option.'),
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be 1 or greater.'),
   query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100.'),
@@ -86,7 +87,7 @@ const listValidation = [
 // POST /issues — multipart/form-data with optional "photo"
 router.post('/', protect, withPhotoUpload, createValidation, check, createIssue);
 
-// GET /issues?search=&category=&status=&page=&limit=&sort=
+// GET /issues?search=&category=&status=&location=&page=&limit=&sort=
 router.get('/', protect, listValidation, check, listIssues);
 
 // GET /issues/categories — category/status lists for the frontend UI

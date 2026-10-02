@@ -80,6 +80,11 @@ const listIssues = async (req, res) => {
     if (req.query.category) filter.category = req.query.category;
     if (req.query.status) filter.status = req.query.status;
     if (req.query.search) filter.$text = { $search: req.query.search };
+    if (req.query.location) {
+      // Case-insensitive partial match so "room 204" finds "Block B, Room 204"
+      const safe = req.query.location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.location = new RegExp(safe, 'i');
+    }
     if (req.user.role !== 'admin' && req.query.mine !== 'true') {
       filter.reportedBy = req.user._id;
     } else if (req.query.mine === 'true') {
@@ -334,6 +339,10 @@ const listMyIssues = async (req, res) => {
     const filter = { reportedBy: req.user._id };
     if (req.query.status) filter.status = req.query.status;
     if (req.query.category) filter.category = req.query.category;
+    if (req.query.location) {
+      const safe = req.query.location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.location = new RegExp(safe, 'i');
+    }
 
     const [issues, total] = await Promise.all([
       Report.find(filter)
