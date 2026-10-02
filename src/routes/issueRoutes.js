@@ -8,6 +8,8 @@ const {
   deleteIssue,
   toggleUpvote,
   addComment,
+  listComments,
+  deleteComment,
   updateIssueStatus,
 } = require('../controllers/issueController');
 const { protect } = require('../middleware/authMiddleware');
@@ -70,6 +72,9 @@ const commentValidation = [
 ];
 
 const idParam = param('id').isMongoId().withMessage('Invalid issue id.');
+const commentIdParam = param('commentId')
+  .isMongoId()
+  .withMessage('Invalid comment id.');
 
 const listValidation = [
   query('category').optional().isIn(CATEGORIES).withMessage('Invalid category filter.'),
@@ -107,8 +112,14 @@ router.delete('/:id', protect, idParam, check, deleteIssue);
 // POST /issues/:id/upvote — add or remove (one per user)
 router.post('/:id/upvote', protect, idParam, check, toggleUpvote);
 
-// POST /issues/:id/comments
+// POST /issues/:id/comments — add a comment
 router.post('/:id/comments', protect, idParam, commentValidation, check, addComment);
+
+// GET /issues/:id/comments?page=&limit= — list comments (oldest first)
+router.get('/:id/comments', protect, idParam, check, listComments);
+
+// DELETE /issues/:id/comments/:commentId — comment author or admin
+router.delete('/:id/comments/:commentId', protect, idParam, commentIdParam, check, deleteComment);
 
 // PATCH /issues/:id/status — admin only
 router.patch('/:id/status', protect, idParam, statusValidation, check, updateIssueStatus);

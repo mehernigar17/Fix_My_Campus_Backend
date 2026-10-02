@@ -123,6 +123,7 @@ reportSchema.methods.toPublicObject = function () {
     resolutionNote: this.resolutionNote,
     upvoteCount: this.upvoteCount ?? this.upvotes?.length ?? 0,
     upvotedByMe: false, // set per-request by the controller when req.user is known
+    commentCount: (this.comments || []).length,
     comments: (this.comments || []).map((c) => ({
       _id: c._id,
       text: c.text,

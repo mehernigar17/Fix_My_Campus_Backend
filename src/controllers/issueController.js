@@ -11,6 +11,16 @@ const serialize = (report, userId) => {
   return obj;
 };
 
+// Shapes a single comment (user is populated with name + email).
+const serializeComment = (c) => ({
+  _id: c._id,
+  text: c.text,
+  createdAt: c.createdAt,
+  user: c.user
+    ? { _id: c.user._id || c.user, name: c.user.name, email: c.user.email }
+    : c.user,
+});
+
 const findIssueOr404 = async (id) => {
   if (!id.match(/^[a-f\d]{24}$/i)) return null;
   return Report.findById(id);
@@ -64,7 +74,8 @@ const createIssue = async (req, res) => {
 
 /**
  * GET /issues?search=&category=&status=&page=&limit=&sort=
- * Search + filters. Students see only their own issues; admins see all.
+ * Campus board: every signed-in user can browse every issue so that upvotes
+ * and filters are meaningful. `mine=true` narrows the list to the caller.
  */
 const listIssues = async (req, res) => {
   try {
@@ -85,8 +96,8 @@ const listIssues = async (req, res) => {
       const safe = req.query.location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.location = new RegExp(safe, 'i');
     }
-    // Non-admins only ever see their own issues; `mine=true` narrows admins to theirs
-    if (req.user.role !== 'admin' || req.query.mine === 'true') {
+    // The campus board is shared; `mine=true` narrows it to the caller's own
+    if (req.query.mine === 'true') {
       filter.reportedBy = req.user._id;
     }
 
@@ -264,16 +275,8 @@ const addComment = async (req, res) => {
 
     res.status(201).json({
       message: 'Comment added successfully.',
-      comment: {
-        _id: created._id,
-        text: created.text,
-        createdAt: created.createdAt,
-        user: {
-          _id: req.user._id,
-          name: req.user.name,
-          email: req.user.email,
-        },
-      },
+      comment: serializeComment(created),
+      commentCount: issue.comments.length,
       issue: serialize(issue, req.user._id),
     });
   } catch (error) {
@@ -281,6 +284,68 @@ const addComment = async (req, res) => {
       return res.status(400).json({ message: Object.values(error.errors)[0].message });
     }
     console.error('AddComment error:', error);
+    res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+};
+
+/**
+ * GET /issues/:id/comments  (protected)
+ * Comments for one issue, oldest first, paginated.
+ */
+const listComments = async (req, res) => {
+  try {
+    const issue = await findIssueOr404(req.params.id);
+    if (!issue) {
+      return res.status(404).json({ message: 'Issue not found.' });
+    }
+
+    await issue.populate('comments.user', 'name email');
+
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+
+    const all = issue.comments || [];
+    const slice = all.slice((page - 1) * limit, page * limit);
+
+    res.status(200).json({
+      count: slice.length,
+      total: all.length,
+      page,
+      pages: Math.ceil(all.length / limit) || 1,
+      comments: slice.map(serializeComment),
+    });
+  } catch (error) {
+    console.error('ListComments error:', error);
+    res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+};
+
+/**
+ * DELETE /issues/:id/comments/:commentId  (protected — comment author or admin)
+ */
+const deleteComment = async (req, res) => {
+  try {
+    const issue = await findIssueOr404(req.params.id);
+    if (!issue) {
+      return res.status(404).json({ message: 'Issue not found.' });
+    }
+
+    const comment = (issue.comments || []).id(req.params.commentId);
+    if (!comment) {
+      return res.status(404).json({ message: 'Comment not found.' });
+    }
+
+    const isAuthor = String(comment.user) === String(req.user._id);
+    if (!isAuthor && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied. Only the comment author or an admin can delete it.' });
+    }
+
+    comment.deleteOne();
+    await issue.save({ validateBeforeSave: false });
+
+    res.status(200).json({ message: 'Comment deleted successfully.', commentCount: issue.comments.length });
+  } catch (error) {
+    console.error('DeleteComment error:', error);
     res.status(500).json({ message: 'Server error. Please try again later.' });
   }
 };
@@ -363,21 +428,35 @@ const listMyIssues = async (req, res) => {
 
 /**
  * GET /stats  (protected)
- * Counts by status and category, plus the most upvoted issues.
+ * Campus-wide counts by status and category, plus the most upvoted issues,
+ * how many were resolved in the last 30 days and the average resolution time.
  */
 const getStats = async (req, res) => {
   try {
-    const scope = req.user.role === 'admin' ? {} : { reportedBy: req.user._id };
+    const scope = {};
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-    const [byStatus, byCategory, topUpvoted] = await Promise.all([
-      Report.aggregate([{ $match: scope }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
-      Report.aggregate([{ $match: scope }, { $group: { _id: '$category', count: { $sum: 1 } } }]),
-      Report.find(scope)
-        .populate('reportedBy', 'name email')
-        .populate('comments.user', 'name email')
-        .sort({ upvoteCount: -1, createdAt: -1 })
-        .limit(5),
-    ]);
+    const [byStatus, byCategory, topUpvoted, avgResolution, resolvedThisMonth] =
+      await Promise.all([
+        Report.aggregate([{ $match: scope }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
+        Report.aggregate([{ $match: scope }, { $group: { _id: '$category', count: { $sum: 1 } } }]),
+        Report.find(scope)
+          .populate('reportedBy', 'name email')
+          .populate('comments.user', 'name email')
+          .sort({ upvoteCount: -1, createdAt: -1 })
+          .limit(5),
+        // Average time from report to resolution, in days
+        Report.aggregate([
+          { $match: { ...scope, status: 'resolved', resolvedAt: { $ne: null } } },
+          {
+            $group: {
+              _id: null,
+              avgMs: { $avg: { $subtract: ['$resolvedAt', '$createdAt'] } },
+            },
+          },
+        ]),
+        Report.countDocuments({ ...scope, status: 'resolved', resolvedAt: { $gte: thirtyDaysAgo } }),
+      ]);
 
     const statusCounts = { open: 0, in_progress: 0, resolved: 0 };
     byStatus.forEach((s) => { statusCounts[s._id] = s.count; });
@@ -385,10 +464,17 @@ const getStats = async (req, res) => {
     const categoryCounts = {};
     byCategory.forEach((c) => { categoryCounts[c._id] = c.count; });
 
+    const avgResolutionDays =
+      avgResolution[0]?.avgMs != null
+        ? Math.round((avgResolution[0].avgMs / 86400000) * 10) / 10
+        : null;
+
     res.status(200).json({
       total: Object.values(statusCounts).reduce((a, b) => a + b, 0),
       byStatus: statusCounts,
       byCategory: categoryCounts,
+      resolvedThisMonth,
+      avgResolutionDays,
       topUpvoted: topUpvoted.map((i) => serialize(i, req.user._id)),
     });
   } catch (error) {
@@ -405,6 +491,8 @@ module.exports = {
   deleteIssue,
   toggleUpvote,
   addComment,
+  listComments,
+  deleteComment,
   updateIssueStatus,
   listMyIssues,
   getStats,
