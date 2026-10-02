@@ -65,6 +65,13 @@ const reportSchema = new mongoose.Schema(
         createdAt: { type: Date, default: Date.now },
       },
     ],
+    // Denormalised count so sorting by votes is a plain numeric sort
+    // (MongoDB cannot sort by array length).
+    upvoteCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     // ── Comments (embedded, newest last) ──
     comments: [
       {
@@ -94,6 +101,7 @@ reportSchema.index({ createdAt: -1 });
 reportSchema.index({ category: 1, status: 1 });
 reportSchema.index({ reportedBy: 1, createdAt: -1 });
 reportSchema.index({ title: 'text', description: 'text', location: 'text' });
+reportSchema.index({ upvoteCount: -1, createdAt: -1 });
 
 // ── Instance Method: Public JSON shape ──
 reportSchema.methods.toPublicObject = function () {
@@ -113,7 +121,7 @@ reportSchema.methods.toPublicObject = function () {
       : null,
     status: this.status,
     resolutionNote: this.resolutionNote,
-    upvoteCount: this.upvotes?.length || 0,
+    upvoteCount: this.upvoteCount ?? this.upvotes?.length ?? 0,
     upvotedByMe: false, // set per-request by the controller when req.user is known
     comments: (this.comments || []).map((c) => ({
       _id: c._id,

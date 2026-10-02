@@ -85,9 +85,8 @@ const listIssues = async (req, res) => {
       const safe = req.query.location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.location = new RegExp(safe, 'i');
     }
-    if (req.user.role !== 'admin' && req.query.mine !== 'true') {
-      filter.reportedBy = req.user._id;
-    } else if (req.query.mine === 'true') {
+    // Non-admins only ever see their own issues; `mine=true` narrows admins to theirs
+    if (req.user.role !== 'admin' || req.query.mine === 'true') {
       filter.reportedBy = req.user._id;
     }
 
@@ -96,18 +95,11 @@ const listIssues = async (req, res) => {
       oldest: { createdAt: 1 },
       upvotes: { upvoteCount: -1, createdAt: -1 },
     };
-    const sort = sortMap[req.query.sort] || sortMap.newest;
 
-    let query = Report.find(filter)
+    const query = Report.find(filter)
       .populate('reportedBy', 'name email')
-      .populate('comments.user', 'name email');
-
-    // "upvotes" is computed from the array length
-    if (req.query.sort === 'upvotes') {
-      query = query.sort({ upvotes: -1, createdAt: -1 });
-    } else {
-      query = query.sort(sort);
-    }
+      .populate('comments.user', 'name email')
+      .sort(sortMap[req.query.sort] || sortMap.newest);
 
     const [issues, total] = await Promise.all([
       query.skip((page - 1) * limit).limit(limit),
@@ -228,15 +220,17 @@ const toggleUpvote = async (req, res) => {
     const already = (issue.upvotes || []).some((u) => String(u.user) === String(req.user._id));
     if (already) {
       issue.upvotes = issue.upvotes.filter((u) => String(u.user) !== String(req.user._id));
+      issue.upvoteCount = Math.max((issue.upvoteCount || 0) - 1, 0);
     } else {
       issue.upvotes.push({ user: req.user._id });
+      issue.upvoteCount = (issue.upvoteCount || 0) + 1;
     }
     await issue.save({ validateBeforeSave: false });
 
     res.status(200).json({
       message: already ? 'Upvote removed.' : 'Issue upvoted.',
       upvoted: !already,
-      upvoteCount: issue.upvotes.length,
+      upvoteCount: issue.upvoteCount,
     });
   } catch (error) {
     console.error('ToggleUpvote error:', error);
@@ -381,7 +375,7 @@ const getStats = async (req, res) => {
       Report.find(scope)
         .populate('reportedBy', 'name email')
         .populate('comments.user', 'name email')
-        .sort({ upvotes: -1, createdAt: -1 })
+        .sort({ upvoteCount: -1, createdAt: -1 })
         .limit(5),
     ]);
 
