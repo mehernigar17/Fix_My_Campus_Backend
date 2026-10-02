@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+require('./User'); // Ensure User schema is registered for populate('reportedBy') and populate('comments.user')
 
 const CATEGORIES = ['Electrical', 'Water', 'Cleanliness', 'Furniture', 'Internet', 'Other'];
 const STATUSES = ['open', 'in_progress', 'resolved', 'Open', 'In Progress', 'Resolved'];
@@ -36,6 +37,41 @@ const normalizeForCompare = (value) =>
 
 const duplicateKey = ({ title, location, category }) =>
   [String(category ?? ''), normalizeForCompare(location), normalizeForCompare(title)].join(' | ');
+
+// ── Status spellings ──
+// Statuses were first stored with whatever casing the UI sent ("In Progress")
+// and later normalised to snake_case. Both spellings still live in the
+// database, so every query and every write accepts either form and always
+// stores the canonical one.
+const CANONICAL_STATUSES = ['open', 'in_progress', 'resolved'];
+
+// Every stored spelling of one canonical status.
+const STATUS_VARIANTS = {
+  open: ['open', 'Open'],
+  in_progress: ['in_progress', 'in progress', 'In Progress', 'In_Progress'],
+  resolved: ['resolved', 'Resolved'],
+};
+
+// "In Progress", "in-progress", "IN_PROGRESS" -> "in_progress"
+const canonicalStatus = (value) =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+
+/**
+ * A Mongo filter matching a status however it is spelled in the database.
+ * Returns `{ $in: [...] }` for a known status, or the raw value when the
+ * caller passed something that is not one of the three (the route validators
+ * reject those before the controller runs).
+ */
+const statusFilterFor = (value) => {
+  const key = canonicalStatus(value);
+  return STATUS_VARIANTS[key] ? { $in: STATUS_VARIANTS[key] } : String(value ?? '').trim();
+};
+
+/** True when the value names one of the three known statuses. */
+const isCanonicalStatus = (value) => CANONICAL_STATUSES.includes(canonicalStatus(value));
 
 // ── Report Schema (Model) ──
 const reportSchema = new mongoose.Schema(
@@ -94,7 +130,7 @@ const reportSchema = new mongoose.Schema(
       state: {
         type: String,
         enum: MODERATION_STATES,
-        default: 'pending',
+        default: 'approved',
       },
       reviewedBy: {
         type: mongoose.Schema.Types.ObjectId,
@@ -151,6 +187,33 @@ const reportSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    // ── Status history (admin audit trail, oldest first) ──
+    // Every admin status change appends one entry, so "who moved this to
+    // In Progress, when, and why" is answerable from the report itself rather
+    // than from server logs. `note` carries the resolution note when there was
+    // one. Entries are written only by the API and are never accepted from
+    // the client.
+    statusHistory: [
+      {
+        _id: false,
+        from: { type: String, default: null },
+        to: { type: String, required: true },
+        note: { type: String, default: '', trim: true, maxlength: 1000 },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        byRole: { type: String, enum: ['student', 'admin'], default: 'admin' },
+        at: { type: Date, default: Date.now },
+      },
+    ],
+    // ── Last admin edit (who corrected the report, and when) ──
+    lastEditedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    lastEditedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
@@ -164,6 +227,10 @@ reportSchema.index({ reportedBy: 1, createdAt: -1 });
 reportSchema.index({ title: 'text', description: 'text', location: 'text' });
 reportSchema.index({ upvoteCount: -1, createdAt: -1 });
 reportSchema.index({ 'moderation.state': 1, createdAt: -1 });
+// The admin board lists by work state and review state together
+reportSchema.index({ status: 1, 'moderation.state': 1, createdAt: -1 });
+// Oldest-first page of one report's audit trail
+reportSchema.index({ statusHistory: { $exists: true } });
 
 // ── Instance Method: Public JSON shape ──
 reportSchema.methods.toPublicObject = function () {
@@ -207,9 +274,27 @@ reportSchema.methods.toPublicObject = function () {
           _id: this.reportedBy._id,
           name: this.reportedBy.name,
           email: this.reportedBy.email,
+          role: this.reportedBy.role,
         }
       : this.reportedBy,
     resolvedAt: this.resolvedAt,
+    // Audit trail. Empty for reports nobody has worked on yet; the controller
+    // decides who may read it — see canSeeAuditTrail() in issueController.
+    statusHistory: (this.statusHistory || []).map((h) => ({
+      _id: h._id,
+      from: h.from || null,
+      to: h.to,
+      note: h.note || '',
+      at: h.at,
+      by: h.by
+        ? { _id: h.by._id || h.by, name: h.by.name, email: h.by.email }
+        : null,
+      byRole: h.byRole,
+    })),
+    lastEditedBy: this.lastEditedBy
+      ? { _id: this.lastEditedBy._id, name: this.lastEditedBy.name }
+      : this.lastEditedBy || null,
+    lastEditedAt: this.lastEditedAt || null,
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
   };
@@ -239,8 +324,25 @@ module.exports.STATUSES = STATUSES;
 module.exports.UNRESOLVED_STATUSES = UNRESOLVED_STATUSES;
 module.exports.MODERATION_STATES = MODERATION_STATES;
 module.exports.PUBLISHED_FILTER = PUBLISHED_FILTER;
+module.exports.CANONICAL_STATUSES = CANONICAL_STATUSES;
+module.exports.STATUS_VARIANTS = STATUS_VARIANTS;
+module.exports.canonicalStatus = canonicalStatus;
+module.exports.statusFilterFor = statusFilterFor;
+module.exports.isCanonicalStatus = isCanonicalStatus;
 module.exports.normalizeForCompare = normalizeForCompare;
 module.exports.duplicateKey = duplicateKey;
+
+/**
+ * Append one entry to a report's audit trail. Mutates the document but does
+ * not save — the caller saves once so a status change is a single write.
+ * @param {import('mongoose').Document} report
+ * @param {{ from?: string|null, to: string, note?: string, by?: any, byRole?: 'student'|'admin', at?: Date }} entry
+ */
+Report.recordStatusChange = function (report, { from, to, note = '', by = null, byRole = 'admin', at = new Date() }) {
+  if (!Array.isArray(report.statusHistory)) report.statusHistory = [];
+  report.statusHistory.push({ from: from || null, to, note, by, byRole, at });
+  return report;
+};
 
 /**
  * The moderation state of a document, defaulting to 'approved' for reports
@@ -252,3 +354,14 @@ Report.moderationStateOf = (doc) => doc?.moderation?.state || 'approved';
  * True when the report may appear on the public campus board.
  */
 Report.isPublished = (doc) => Report.moderationStateOf(doc) === 'approved';
+
+/**
+ * A Mongo filter for one review state that also matches reports filed before
+ * the gate existed. 'approved' has to match "no moderation field at all"
+ * (those reports were published the moment they were filed) or an admin
+ * filtering the board by Approved would silently lose them.
+ */
+Report.moderationFilterFor = (state) =>
+  state === 'approved'
+    ? { $or: [{ 'moderation.state': 'approved' }, { 'moderation.state': { $exists: false } }] }
+    : { 'moderation.state': state };

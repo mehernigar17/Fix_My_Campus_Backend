@@ -11,11 +11,18 @@ const {
   listComments,
   deleteComment,
   updateIssueStatus,
+  getIssueHistory,
   reviewIssue,
 } = require('../controllers/issueController');
 const { protect } = require('../middleware/authMiddleware');
 const { withPhotoUpload } = require('../middleware/uploadMiddleware');
-const { CATEGORIES, STATUSES, MODERATION_STATES } = require('../models/Report');
+const {
+  CATEGORIES,
+  STATUSES,
+  MODERATION_STATES,
+  CANONICAL_STATUSES,
+  canonicalStatus,
+} = require('../models/Report');
 
 const router = express.Router();
 
@@ -58,9 +65,30 @@ const updateValidation = [
     .isLength({ min: 3, max: 160 }).withMessage('Location must be 3-160 characters.'),
 ];
 
+// PATCH /issues/:id — every field optional, but whatever is sent must be
+// valid. An admin uses this to correct one field (e.g. a wrong location)
+// without resending the whole report; a student uses it to fix their own.
+const partialUpdateValidation = [
+  body('title').optional({ values: 'falsy' }).trim()
+    .isLength({ min: 5, max: 120 }).withMessage('Title must be 5-120 characters.'),
+  body('description').optional({ values: 'falsy' }).trim()
+    .isLength({ min: 10, max: 2000 }).withMessage('Description must be 10-2000 characters.'),
+  body('category').optional({ values: 'falsy' })
+    .isIn(CATEGORIES).withMessage(`Category must be one of: ${CATEGORIES.join(', ')}.`),
+  body('location').optional({ values: 'falsy' }).trim()
+    .isLength({ min: 3, max: 160 }).withMessage('Location must be 3-160 characters.'),
+  // Drop the photo without sending a new file. Accepts "true" or 1/true.
+  body('removePhoto').optional({ values: 'falsy' })
+    .isIn(['true', 'false', '1', '0', true, false])
+    .withMessage('removePhoto must be true or false.'),
+];
+
 const statusValidation = [
+  // normalizeStatusBody has already rewritten the value to its canonical
+  // spelling by the time this runs, so only the three snake_case forms can
+  // reach it.
   body('status').notEmpty().withMessage('Status is required.')
-    .isIn(STATUSES).withMessage(`Status must be one of: ${STATUSES.join(', ')}.`),
+    .isIn(CANONICAL_STATUSES).withMessage(`Status must be one of: ${CANONICAL_STATUSES.join(', ')}.`),
   body('resolutionNote').optional().trim().isLength({ max: 1000 })
     .withMessage('Resolution note cannot exceed 1000 characters.'),
 ];
@@ -87,18 +115,13 @@ const commentIdParam = param('commentId')
   .isMongoId()
   .withMessage('Invalid comment id.');
 
-// Accepts human-friendly status spellings from the UI. Express 5 re-parses
-// req.query on every access, so normalisation has to happen where the value is
-// read (the controller); here we only accept the valid spellings.
 // Accepts human-friendly status spellings from the UI, e.g. "In Progress",
 // "in-progress", "OPEN" -> "in_progress". Express 5 re-parses req.query on every
-// access, so query values are normalised in the controller instead; this
-// middleware handles the PATCH body, which is safe to rewrite.
-const CANONICAL_STATUSES = ['open', 'in_progress', 'resolved'];
-
-const canonicalStatus = (value) =>
-  String(value).trim().toLowerCase().replace(/[\s-]+/g, '_');
-
+// access, so query values are normalised by the controller instead (and by
+// Report.statusFilterFor, which then matches every casing already stored).
+// This middleware handles the PATCH /issues/:id/status body, which is safe to
+// rewrite, and canonicalStatus itself lives in the model so the routes, the
+// controller and the stored data can never disagree about what a status is.
 const normalizeStatusBody = (req, res, next) => {
   if (req.body && req.body.status) {
     const key = canonicalStatus(req.body.status);
@@ -132,7 +155,7 @@ const listValidation = [
 router.post('/', protect, withPhotoUpload, createValidation, check, createIssue);
 
 // GET /issues?search=&category=&status=&location=&page=&limit=&sort=
-router.get('/', protect, listValidation, check, listIssues);
+router.get('/', protect, listValidation, check, (req, res) => listIssues(req, res));
 
 // GET /issues/categories — category/status lists for the frontend UI
 router.get('/categories', (req, res) => {
@@ -147,8 +170,14 @@ router.get('/pending', protect, listValidation, check, (req, res) => listIssues(
 // GET /issues/:id
 router.get('/:id', protect, idParam, check, getIssue);
 
-// PUT /issues/:id — owner only
-router.put('/:id', protect, idParam, updateValidation, check, updateIssue);
+// PUT /issues/:id — owner, or any admin. Full edit of the four fields.
+// multipart/form-data is accepted so an admin can replace the photo in the
+// same request.
+router.put('/:id', protect, idParam, withPhotoUpload, updateValidation, check, updateIssue);
+
+// PATCH /issues/:id — owner, or any admin. Partial edit: send only what
+// changes. Also the admin's way to drop a photo (removePhoto=true).
+router.patch('/:id', protect, idParam, withPhotoUpload, partialUpdateValidation, check, updateIssue);
 
 // DELETE /issues/:id — owner or admin
 router.delete('/:id', protect, idParam, check, deleteIssue);
@@ -167,6 +196,10 @@ router.delete('/:id/comments/:commentId', protect, idParam, commentIdParam, chec
 
 // PATCH /issues/:id/status — admin only
 router.patch('/:id/status', protect, idParam, normalizeStatusBody, statusValidation, check, updateIssueStatus);
+
+// GET /issues/:id/history — admin only. Every status change and review
+// decision on one report, oldest first, with who made it.
+router.get('/:id/history', protect, idParam, check, getIssueHistory);
 
 // PATCH /issues/:id/moderation — admin only. Approve publishes the report to
 // the campus board, reject keeps it off and shows the note to the reporter.
