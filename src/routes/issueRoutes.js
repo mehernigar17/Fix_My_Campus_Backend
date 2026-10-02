@@ -76,9 +76,33 @@ const commentIdParam = param('commentId')
   .isMongoId()
   .withMessage('Invalid comment id.');
 
+// Accepts human-friendly status spellings from the UI. Express 5 re-parses
+// req.query on every access, so normalisation has to happen where the value is
+// read (the controller); here we only accept the valid spellings.
+// Accepts human-friendly status spellings from the UI, e.g. "In Progress",
+// "in-progress", "OPEN" -> "in_progress". Express 5 re-parses req.query on every
+// access, so query values are normalised in the controller instead; this
+// middleware handles the PATCH body, which is safe to rewrite.
+const CANONICAL_STATUSES = ['open', 'in_progress', 'resolved'];
+
+const canonicalStatus = (value) =>
+  String(value).trim().toLowerCase().replace(/[\s-]+/g, '_');
+
+const normalizeStatusBody = (req, res, next) => {
+  if (req.body && req.body.status) {
+    const key = canonicalStatus(req.body.status);
+    req.body.status = CANONICAL_STATUSES.includes(key) ? key : req.body.status;
+  }
+  next();
+};
+
 const listValidation = [
   query('category').optional().isIn(CATEGORIES).withMessage('Invalid category filter.'),
-  query('status').optional().isIn(STATUSES).withMessage('Invalid status filter.'),
+  query('status')
+    .optional()
+    .customSanitizer(canonicalStatus)
+    .isIn(CANONICAL_STATUSES)
+    .withMessage('Invalid status filter.'),
   query('search').optional().trim().isLength({ max: 100 }).withMessage('Search is too long.'),
   query('location').optional().trim().isLength({ max: 160 }).withMessage('Location filter is too long.'),
   query('sort').optional().isIn(['newest', 'oldest', 'upvotes']).withMessage('Invalid sort option.'),
@@ -122,6 +146,6 @@ router.get('/:id/comments', protect, idParam, check, listComments);
 router.delete('/:id/comments/:commentId', protect, idParam, commentIdParam, check, deleteComment);
 
 // PATCH /issues/:id/status — admin only
-router.patch('/:id/status', protect, idParam, statusValidation, check, updateIssueStatus);
+router.patch('/:id/status', protect, idParam, normalizeStatusBody, statusValidation, check, updateIssueStatus);
 
 module.exports = router;

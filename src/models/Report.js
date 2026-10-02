@@ -3,6 +3,26 @@ const mongoose = require('mongoose');
 const CATEGORIES = ['Electrical', 'Water', 'Cleanliness', 'Furniture', 'Internet', 'Other'];
 const STATUSES = ['open', 'in_progress', 'resolved', 'Open', 'In Progress', 'Resolved'];
 
+// ── Duplicate detection ──
+// Two reports describe the same problem when they name the same thing in the
+// same place: the same category, plus a title and location that match once
+// case, spacing and punctuation are ignored ("Tap leaking - Block C" and
+// "tap leaking in block c" are one complaint, not two).
+// Only unresolved reports block a new one: once staff resolve a problem the
+// same complaint may be filed again, because a fixed fault can come back.
+const UNRESOLVED_STATUSES = ['open', 'in_progress'];
+
+const normalizeForCompare = (value) =>
+  String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '') // drop accents so "café" matches "cafe"
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ') // punctuation and separators collapse to one space
+    .trim();
+
+const duplicateKey = ({ title, location, category }) =>
+  [String(category ?? ''), normalizeForCompare(location), normalizeForCompare(title)].join(' | ');
+
 // ── Report Schema (Model) ──
 const reportSchema = new mongoose.Schema(
   {
@@ -145,8 +165,27 @@ reportSchema.methods.toPublicObject = function () {
   };
 };
 
+// ── Static Method: Find an unresolved report of the same problem ──
+// `excludeId` skips a document (used when editing, so a report never
+// collides with itself). The Mongo filter narrows by category and status —
+// the comparison that decides is the normalised key, done here in JS, so
+// existing documents need no new field and no backfill.
+reportSchema.statics.findActiveDuplicate = async function ({ title, location, category, excludeId = null }) {
+  const key = duplicateKey({ title, location, category });
+  if (!normalizeForCompare(title) || !normalizeForCompare(location)) return null;
+
+  const filter = { category, status: { $in: UNRESOLVED_STATUSES } };
+  if (excludeId) filter._id = { $ne: excludeId };
+
+  const candidates = await this.find(filter);
+  return candidates.find((doc) => duplicateKey(doc) === key) || null;
+};
+
 const Report = mongoose.model('Report', reportSchema);
 
 module.exports = Report;
 module.exports.CATEGORIES = CATEGORIES;
 module.exports.STATUSES = STATUSES;
+module.exports.UNRESOLVED_STATUSES = UNRESOLVED_STATUSES;
+module.exports.normalizeForCompare = normalizeForCompare;
+module.exports.duplicateKey = duplicateKey;

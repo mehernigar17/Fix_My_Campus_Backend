@@ -40,6 +40,21 @@ const createIssue = async (req, res) => {
 
     const { title, description, category, location } = req.body;
 
+    // One board, one entry per problem: if this exact complaint is still
+    // unresolved, hand the reporter the existing report to upvote instead of
+    // creating a near-identical copy of it.
+    const existing = await Report.findActiveDuplicate({ title, location, category });
+    if (existing) {
+      if (req.file) deletePhotoFile(req.file.filename);
+      await existing.populate('reportedBy', 'name email');
+      return res.status(409).json({
+        message:
+          'This problem is already reported. Upvote the existing report instead of creating a duplicate.',
+        code: 'DUPLICATE_ISSUE',
+        duplicateOf: serialize(existing, req.user._id),
+      });
+    }
+
     const issue = await Report.create({
       title,
       description,
@@ -90,16 +105,17 @@ const listIssues = async (req, res) => {
     const filter = {};
     if (req.query.category) filter.category = req.query.category;
     if (req.query.status) {
-      const s = req.query.status.trim();
-      if (s.toLowerCase() === 'open') {
-        filter.status = { $in: ['open', 'Open'] };
-      } else if (s.toLowerCase() === 'in progress' || s.toLowerCase() === 'in_progress') {
-        filter.status = { $in: ['in_progress', 'In Progress'] };
-      } else if (s.toLowerCase() === 'resolved') {
-        filter.status = { $in: ['resolved', 'Resolved'] };
-      } else {
-        filter.status = s;
-      }
+      // Accepts "open", "Open", "in_progress", "In Progress", "resolved", …
+      // and matches every casing variant already stored in the database.
+      const key = String(req.query.status).trim().toLowerCase().replace(/\s+/g, '_');
+      const variants = {
+        open: ['open', 'Open'],
+        in_progress: ['in_progress', 'In Progress'],
+        resolved: ['resolved', 'Resolved'],
+      };
+      filter.status = variants[key]
+        ? { $in: variants[key] }
+        : String(req.query.status).trim();
     }
     if (req.query.search) {
       const safe = req.query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -189,6 +205,25 @@ const updateIssue = async (req, res) => {
     }
 
     const { title, description, category, location } = req.body;
+
+    // Editing must not smuggle a duplicate onto the board either — compare
+    // against every other unresolved report, never against this one.
+    const clash = await Report.findActiveDuplicate({
+      title,
+      location,
+      category,
+      excludeId: issue._id,
+    });
+    if (clash) {
+      await clash.populate('reportedBy', 'name email');
+      return res.status(409).json({
+        message:
+          'Another report already covers this problem. Upvote it instead of editing this report into a duplicate.',
+        code: 'DUPLICATE_ISSUE',
+        duplicateOf: serialize(clash, req.user._id),
+      });
+    }
+
     issue.title = title;
     issue.description = description;
     issue.category = category;
