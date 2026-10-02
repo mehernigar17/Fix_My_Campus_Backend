@@ -803,6 +803,48 @@ const run = async () => {
     eq(res.status, 403, 'status');
   });
 
+  // ── The action endpoints answer POST as well as PATCH ────────────────────
+  console.log('\nMethods — action endpoints accept POST');
+
+  await test('POST works on /:id/status as well as PATCH', async () => {
+    documents.length = 0;
+    const issue = await seedIssue({ reportedBy: studentId });
+    const res = await call('POST', `/${issue._id}/status`, {
+      token: admin,
+      body: { status: 'In Progress' },
+    });
+    eq(res.status, 200, 'status');
+    eq(res.body.issue.status, 'in_progress', 'status applied');
+    eq(res.body.issue.statusHistory[0].by.name, 'Arjun Rao', 'still audited');
+  });
+
+  await test('POST works on /:id/moderation as well as PATCH', async () => {
+    documents.length = 0;
+    const issue = await seedIssue({ reportedBy: studentId });
+    const res = await call('POST', `/${issue._id}/moderation`, {
+      token: admin,
+      body: { decision: 'approve' },
+    });
+    eq(res.status, 200, 'status');
+    eq(res.body.issue.moderation.state, 'approved', 'published');
+  });
+
+  await test('the POST aliases enforce the same rules as PATCH', async () => {
+    documents.length = 0;
+    const issue = await seedIssue({ reportedBy: studentId });
+    eq(
+      (await call('POST', `/${issue._id}/moderation`, { token: student, body: { decision: 'approve' } })).status,
+      403,
+      'a student still cannot review'
+    );
+    eq(
+      (await call('POST', `/${issue._id}/status`, { token: admin, body: { status: 'Cancelled' } })).status,
+      400,
+      'an invalid status is still rejected'
+    );
+    eq((await call('POST', `/${issue._id}/moderation`, { body: { decision: 'approve' } })).status, 401, 'no token');
+  });
+
   // ── History endpoint ─────────────────────────────────────────────────────
   console.log('\nRead — activity history');
 

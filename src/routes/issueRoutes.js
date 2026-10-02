@@ -194,8 +194,12 @@ router.get('/:id/comments', protect, idParam, check, listComments);
 // DELETE /issues/:id/comments/:commentId — comment author or admin
 router.delete('/:id/comments/:commentId', protect, idParam, commentIdParam, check, deleteComment);
 
-// PATCH /issues/:id/status — admin only
-router.patch('/:id/status', protect, idParam, normalizeStatusBody, statusValidation, check, updateIssueStatus);
+// PATCH /issues/:id/status — admin only.
+// POST is accepted as an alias: this is an action, not a field update, and a
+// client that posts to it used to get a 404 that looked like a missing route.
+const issueStatusAction = [protect, idParam, normalizeStatusBody, statusValidation, check, updateIssueStatus];
+router.patch('/:id/status', ...issueStatusAction);
+router.post('/:id/status', ...issueStatusAction);
 
 // GET /issues/:id/history — admin only. Every status change and review
 // decision on one report, oldest first, with who made it.
@@ -203,6 +207,9 @@ router.get('/:id/history', protect, idParam, check, getIssueHistory);
 
 // PATCH /issues/:id/moderation — admin only. Approve publishes the report to
 // the campus board, reject keeps it off and shows the note to the reporter.
-router.patch('/:id/moderation', protect, idParam, moderationValidation, check, reviewIssue);
+// POST is accepted as an alias here too, for the same reason as /status.
+const issueModerationAction = [protect, idParam, moderationValidation, check, reviewIssue];
+router.patch('/:id/moderation', ...issueModerationAction);
+router.post('/:id/moderation', ...issueModerationAction);
 
 module.exports = router;
